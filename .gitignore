@@ -1,0 +1,13 @@
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+
+# Secrets / environment
+.env
+.env.*
+
