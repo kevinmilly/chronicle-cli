@@ -10,4 +10,6 @@ build/
 # Secrets / environment
 .env
 .env.*
+.claude/
 
+.claude/
