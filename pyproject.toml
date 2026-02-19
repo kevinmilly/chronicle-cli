@@ -9,6 +9,7 @@ description = "A CLI journaling and self-analysis tool"
 requires-python = ">=3.11"
 dependencies = [
     "typer[all]>=0.9",
+    "cryptography>=41.0",
 ]
 
 [project.optional-dependencies]

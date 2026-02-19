@@ -33,6 +33,13 @@ ai_app = typer.Typer(
 )
 app.add_typer(ai_app, name="ai")
 
+sync_app = typer.Typer(
+    name="sync",
+    help="Cloud sync (push/pull encrypted entries).",
+    no_args_is_help=True,
+)
+app.add_typer(sync_app, name="sync")
+
 
 ConfigDir = Annotated[
     Optional[Path],
@@ -562,6 +569,189 @@ def ai_freestyle(
     typer.echo("Thinking...\n")
     result = freestyle_query(entries, question, model=cfg.ai_model)
     typer.echo(result)
+
+
+# ── sync ───────────────────────────────────────────────────────────────
+
+def _get_passphrase() -> str:
+    """Get sync passphrase from env var or prompt."""
+    import os
+
+    passphrase = os.environ.get("CHRONICLE_SYNC_PASSPHRASE", "")
+    if not passphrase:
+        passphrase = typer.prompt("Sync passphrase", hide_input=True)
+    if not passphrase:
+        typer.echo("No passphrase provided.", err=True)
+        raise typer.Exit(code=1)
+    return passphrase
+
+
+def _get_sync_backend(cfg: ChronicleConfig) -> "SyncBackend":
+    """Build the sync backend from config."""
+    from chronicle.sync.gist_backend import GistBackend
+
+    if not cfg.sync_enabled:
+        typer.echo(
+            "Sync is not configured. Run 'chronicle sync setup' first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if cfg.sync_backend == "gist":
+        if not cfg.sync_gist_id or not cfg.sync_github_token:
+            typer.echo(
+                "Gist sync not fully configured. Run 'chronicle sync setup'.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        return GistBackend(cfg.sync_gist_id, cfg.sync_github_token)
+
+    typer.echo(f"Unknown sync backend: {cfg.sync_backend}", err=True)
+    raise typer.Exit(code=1)
+
+
+def _get_sync_key(cfg: ChronicleConfig, passphrase: str) -> bytes:
+    """Derive the encryption key from passphrase + config salt."""
+    from chronicle.sync.crypto import derive_key
+
+    if not cfg.sync_encryption_salt:
+        typer.echo("No encryption salt configured. Run 'chronicle sync setup'.", err=True)
+        raise typer.Exit(code=1)
+    salt = bytes.fromhex(cfg.sync_encryption_salt)
+    return derive_key(passphrase, salt)
+
+
+@sync_app.command(name="setup")
+def sync_setup(config_dir: ConfigDir = None) -> None:
+    """Interactive setup wizard for cloud sync."""
+    from chronicle.config import save_sync_config
+    from chronicle.sync.crypto import generate_salt
+    from chronicle.sync.gist_backend import GistBackend
+
+    cfg = _load_config(config_dir)
+    if not cfg.log_file.exists():
+        typer.echo("Chronicle not initialized. Run 'chronicle init' first.", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("Chronicle Sync Setup")
+    typer.echo("=" * 40)
+
+    # Get GitHub PAT
+    github_token = typer.prompt(
+        "GitHub Personal Access Token (needs 'gist' scope)",
+        hide_input=True,
+    )
+    if not github_token.strip():
+        typer.echo("No token provided.", err=True)
+        raise typer.Exit(code=1)
+    github_token = github_token.strip()
+
+    # Get passphrase
+    passphrase = typer.prompt("Choose a sync passphrase", hide_input=True)
+    passphrase_confirm = typer.prompt("Confirm passphrase", hide_input=True)
+    if passphrase != passphrase_confirm:
+        typer.echo("Passphrases do not match.", err=True)
+        raise typer.Exit(code=1)
+    if not passphrase:
+        typer.echo("No passphrase provided.", err=True)
+        raise typer.Exit(code=1)
+
+    # Generate salt
+    salt = generate_salt()
+    salt_hex = salt.hex()
+
+    # Create Gist
+    typer.echo("Creating sync Gist...")
+    gist_id = GistBackend.create_gist(github_token)
+    typer.echo(f"Gist created: {gist_id}")
+
+    # Save config
+    save_sync_config(
+        gist_id=gist_id,
+        github_token=github_token,
+        encryption_salt=salt_hex,
+        config_dir=config_dir,
+    )
+
+    typer.echo("\nSync configured successfully!")
+    typer.echo(f"  Backend: gist")
+    typer.echo(f"  Gist ID: {gist_id}")
+    typer.echo("  Encryption: enabled (Fernet + PBKDF2)")
+    typer.echo("\nUse 'chronicle push' to backup and 'chronicle pull' to sync.")
+
+
+@sync_app.command(name="pull")
+def sync_pull(config_dir: ConfigDir = None) -> None:
+    """Pull new entries from the cloud."""
+    from chronicle.sync.pull import pull
+
+    cfg = _load_config(config_dir)
+    backend = _get_sync_backend(cfg)
+    passphrase = _get_passphrase()
+    key = _get_sync_key(cfg, passphrase)
+
+    typer.echo("Pulling from remote...")
+    added = pull(backend, key, cfg.log_file)
+
+    if added:
+        typer.echo(f"Pulled {added} new entry(ies).")
+    else:
+        typer.echo("Already up to date (0 new entries).")
+
+
+@sync_app.command(name="push")
+def sync_push(config_dir: ConfigDir = None) -> None:
+    """Push all local entries to the cloud (full backup)."""
+    from chronicle.sync.push import push
+
+    cfg = _load_config(config_dir)
+    backend = _get_sync_backend(cfg)
+    passphrase = _get_passphrase()
+    key = _get_sync_key(cfg, passphrase)
+
+    typer.echo("Pushing to remote...")
+    count = push(backend, key, cfg.log_file)
+
+    if count:
+        typer.echo(f"Pushed {count} entry(ies) to remote.")
+    else:
+        typer.echo("No entries to push.")
+
+
+@sync_app.command(name="status")
+def sync_status(config_dir: ConfigDir = None) -> None:
+    """Show sync configuration status."""
+    cfg = _load_config(config_dir)
+
+    typer.echo("Chronicle Sync Status")
+    typer.echo("=" * 40)
+    typer.echo(f"  Enabled:  {cfg.sync_enabled}")
+    typer.echo(f"  Backend:  {cfg.sync_backend}")
+
+    if cfg.sync_enabled and cfg.sync_backend == "gist":
+        typer.echo(f"  Gist ID:  {cfg.sync_gist_id}")
+        typer.echo(f"  Token:    {'configured' if cfg.sync_github_token else 'not set'}")
+        typer.echo(f"  Salt:     {'configured' if cfg.sync_encryption_salt else 'not set'}")
+
+    if cfg.log_file.exists() and cfg.log_file.stat().st_size > 0:
+        entries = parse_file(cfg.log_file)
+        typer.echo(f"  Local entries: {len(entries)}")
+    else:
+        typer.echo(f"  Local entries: 0")
+
+
+# ── top-level pull/push shortcuts ──────────────────────────────────────
+
+@app.command(name="pull")
+def pull_shortcut(config_dir: ConfigDir = None) -> None:
+    """Pull new entries from the cloud (shortcut for 'sync pull')."""
+    sync_pull(config_dir=config_dir)
+
+
+@app.command(name="push")
+def push_shortcut(config_dir: ConfigDir = None) -> None:
+    """Push all local entries to the cloud (shortcut for 'sync push')."""
+    sync_push(config_dir=config_dir)
 
 
 def app_main() -> None:
