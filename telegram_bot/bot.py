@@ -195,8 +195,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     # Encrypt and upload
-    key = crypto.derive_key(config.SYNC_PASSPHRASE, config.SYNC_SALT)
-    encrypted = crypto.encrypt_payload(formatted, key)
+    encrypted = crypto.encrypt_payload(formatted, config.SYNC_KEY)
 
     try:
         _gist_append(encrypted)

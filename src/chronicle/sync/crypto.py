@@ -1,34 +1,13 @@
-"""Encryption layer for Chronicle sync — Fernet + PBKDF2 key derivation."""
+"""Encryption layer for Chronicle sync — Fernet symmetric encryption."""
 
 from __future__ import annotations
 
-import base64
-import os
-
 from cryptography.fernet import Fernet, InvalidToken
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
 
 
-def generate_salt() -> bytes:
-    """Generate a random 16-byte salt."""
-    return os.urandom(16)
-
-
-def derive_key(passphrase: str, salt: bytes) -> bytes:
-    """Derive a Fernet key from a passphrase and salt using PBKDF2-HMAC-SHA256.
-
-    Uses 480,000 iterations per OWASP recommendations.
-    Returns a URL-safe base64-encoded 32-byte key suitable for Fernet.
-    """
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=480_000,
-    )
-    raw_key = kdf.derive(passphrase.encode("utf-8"))
-    return base64.urlsafe_b64encode(raw_key)
+def generate_key() -> bytes:
+    """Generate a random Fernet key (URL-safe base64-encoded 32 bytes)."""
+    return Fernet.generate_key()
 
 
 def encrypt_payload(plaintext: str, key: bytes) -> str:

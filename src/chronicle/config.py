@@ -32,7 +32,9 @@ class ChronicleConfig:
     sync_backend: str = "gist"
     sync_gist_id: str = ""
     sync_github_token: str = ""
-    sync_encryption_salt: str = ""
+    sync_encryption_key: str = ""
+    telegram_bot_token: str = ""
+    telegram_user_id: str = ""
 
     @property
     def processed_file(self) -> Path:
@@ -54,7 +56,9 @@ class ChronicleConfig:
             sync_backend="gist",
             sync_gist_id="",
             sync_github_token="",
-            sync_encryption_salt="",
+            sync_encryption_key="",
+            telegram_bot_token="",
+            telegram_user_id="",
         )
 
 
@@ -76,7 +80,11 @@ enabled = false
 # backend = "gist"
 # gist_id = ""
 # github_token = ""
-# encryption_salt = ""
+# encryption_key = ""
+
+[telegram]
+# bot_token = ""
+# user_id = ""
 """
 
 
@@ -114,8 +122,14 @@ def load_config(config_dir: Path | None = None) -> ChronicleConfig:
             cfg.sync_gist_id = sync["gist_id"]
         if "github_token" in sync:
             cfg.sync_github_token = sync["github_token"]
-        if "encryption_salt" in sync:
-            cfg.sync_encryption_salt = sync["encryption_salt"]
+        if "encryption_key" in sync:
+            cfg.sync_encryption_key = sync["encryption_key"]
+
+        telegram = data.get("telegram", {})
+        if "bot_token" in telegram:
+            cfg.telegram_bot_token = telegram["bot_token"]
+        if "user_id" in telegram:
+            cfg.telegram_user_id = str(telegram["user_id"])
 
     return cfg
 
@@ -170,7 +184,7 @@ def save_sync_config(
     *,
     gist_id: str,
     github_token: str,
-    encryption_salt: str,
+    encryption_key: str,
     config_dir: Path | None = None,
 ) -> Path:
     """Save sync configuration to the [sync] section of config.toml.
@@ -193,7 +207,7 @@ def save_sync_config(
         'backend = "gist"\n'
         f'gist_id = "{gist_id}"\n'
         f'github_token = "{github_token}"\n'
-        f'encryption_salt = "{encryption_salt}"\n'
+        f'encryption_key = "{encryption_key}"\n'
     )
 
     import re
@@ -209,6 +223,49 @@ def save_sync_config(
         )
     else:
         text = text.rstrip() + "\n\n" + sync_block
+
+    toml_path.write_text(text, encoding="utf-8")
+    return toml_path
+
+
+def save_telegram_config(
+    *,
+    bot_token: str,
+    user_id: str,
+    config_dir: Path | None = None,
+) -> Path:
+    """Save Telegram bot configuration to the [telegram] section of config.toml.
+
+    Creates the file if needed; replaces or appends the [telegram] section.
+    Returns the path to the config file.
+    """
+    import re
+
+    cfg = ChronicleConfig.defaults(config_dir)
+    toml_path = cfg.chronicle_dir / "config.toml"
+
+    cfg.chronicle_dir.mkdir(parents=True, exist_ok=True)
+    if not toml_path.exists():
+        toml_path.write_text(default_config_toml(), encoding="utf-8")
+
+    text = toml_path.read_text(encoding="utf-8")
+
+    telegram_block = (
+        "[telegram]\n"
+        f'bot_token = "{bot_token}"\n'
+        f'user_id = "{user_id}"\n'
+    )
+
+    if re.search(r"^\[telegram\]", text, re.MULTILINE):
+        text = re.sub(
+            r"^\[telegram\]\n(?:[^[\n].*\n|#.*\n|\s*\n)*",
+            telegram_block,
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        text = text.rstrip() + "\n\n" + telegram_block
 
     toml_path.write_text(text, encoding="utf-8")
     return toml_path

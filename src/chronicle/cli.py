@@ -40,6 +40,13 @@ sync_app = typer.Typer(
 )
 app.add_typer(sync_app, name="sync")
 
+telegram_app = typer.Typer(
+    name="telegram",
+    help="Telegram bot configuration.",
+    no_args_is_help=True,
+)
+app.add_typer(telegram_app, name="telegram")
+
 
 ConfigDir = Annotated[
     Optional[Path],
@@ -573,19 +580,6 @@ def ai_freestyle(
 
 # ── sync ───────────────────────────────────────────────────────────────
 
-def _get_passphrase() -> str:
-    """Get sync passphrase from env var or prompt."""
-    import os
-
-    passphrase = os.environ.get("CHRONICLE_SYNC_PASSPHRASE", "")
-    if not passphrase:
-        passphrase = typer.prompt("Sync passphrase", hide_input=True)
-    if not passphrase:
-        typer.echo("No passphrase provided.", err=True)
-        raise typer.Exit(code=1)
-    return passphrase
-
-
 def _get_sync_backend(cfg: ChronicleConfig) -> "SyncBackend":
     """Build the sync backend from config."""
     from chronicle.sync.gist_backend import GistBackend
@@ -610,22 +604,19 @@ def _get_sync_backend(cfg: ChronicleConfig) -> "SyncBackend":
     raise typer.Exit(code=1)
 
 
-def _get_sync_key(cfg: ChronicleConfig, passphrase: str) -> bytes:
-    """Derive the encryption key from passphrase + config salt."""
-    from chronicle.sync.crypto import derive_key
-
-    if not cfg.sync_encryption_salt:
-        typer.echo("No encryption salt configured. Run 'chronicle sync setup'.", err=True)
+def _get_sync_key(cfg: ChronicleConfig) -> bytes:
+    """Get the encryption key from config."""
+    if not cfg.sync_encryption_key:
+        typer.echo("No encryption key configured. Run 'chronicle sync setup'.", err=True)
         raise typer.Exit(code=1)
-    salt = bytes.fromhex(cfg.sync_encryption_salt)
-    return derive_key(passphrase, salt)
+    return cfg.sync_encryption_key.encode("ascii")
 
 
 @sync_app.command(name="setup")
 def sync_setup(config_dir: ConfigDir = None) -> None:
     """Interactive setup wizard for cloud sync."""
     from chronicle.config import save_sync_config
-    from chronicle.sync.crypto import generate_salt
+    from chronicle.sync.crypto import generate_key
     from chronicle.sync.gist_backend import GistBackend
 
     cfg = _load_config(config_dir)
@@ -646,19 +637,8 @@ def sync_setup(config_dir: ConfigDir = None) -> None:
         raise typer.Exit(code=1)
     github_token = github_token.strip()
 
-    # Get passphrase
-    passphrase = typer.prompt("Choose a sync passphrase", hide_input=True)
-    passphrase_confirm = typer.prompt("Confirm passphrase", hide_input=True)
-    if passphrase != passphrase_confirm:
-        typer.echo("Passphrases do not match.", err=True)
-        raise typer.Exit(code=1)
-    if not passphrase:
-        typer.echo("No passphrase provided.", err=True)
-        raise typer.Exit(code=1)
-
-    # Generate salt
-    salt = generate_salt()
-    salt_hex = salt.hex()
+    # Generate encryption key
+    encryption_key = generate_key().decode("ascii")
 
     # Create Gist
     typer.echo("Creating sync Gist...")
@@ -669,14 +649,14 @@ def sync_setup(config_dir: ConfigDir = None) -> None:
     save_sync_config(
         gist_id=gist_id,
         github_token=github_token,
-        encryption_salt=salt_hex,
+        encryption_key=encryption_key,
         config_dir=config_dir,
     )
 
     typer.echo("\nSync configured successfully!")
     typer.echo(f"  Backend: gist")
     typer.echo(f"  Gist ID: {gist_id}")
-    typer.echo("  Encryption: enabled (Fernet + PBKDF2)")
+    typer.echo("  Encryption: enabled (Fernet)")
     typer.echo("\nUse 'chronicle push' to backup and 'chronicle pull' to sync.")
 
 
@@ -687,8 +667,7 @@ def sync_pull(config_dir: ConfigDir = None) -> None:
 
     cfg = _load_config(config_dir)
     backend = _get_sync_backend(cfg)
-    passphrase = _get_passphrase()
-    key = _get_sync_key(cfg, passphrase)
+    key = _get_sync_key(cfg)
 
     typer.echo("Pulling from remote...")
     added = pull(backend, key, cfg.log_file)
@@ -706,8 +685,7 @@ def sync_push(config_dir: ConfigDir = None) -> None:
 
     cfg = _load_config(config_dir)
     backend = _get_sync_backend(cfg)
-    passphrase = _get_passphrase()
-    key = _get_sync_key(cfg, passphrase)
+    key = _get_sync_key(cfg)
 
     typer.echo("Pushing to remote...")
     count = push(backend, key, cfg.log_file)
@@ -731,7 +709,7 @@ def sync_status(config_dir: ConfigDir = None) -> None:
     if cfg.sync_enabled and cfg.sync_backend == "gist":
         typer.echo(f"  Gist ID:  {cfg.sync_gist_id}")
         typer.echo(f"  Token:    {'configured' if cfg.sync_github_token else 'not set'}")
-        typer.echo(f"  Salt:     {'configured' if cfg.sync_encryption_salt else 'not set'}")
+        typer.echo(f"  Key:      {'configured' if cfg.sync_encryption_key else 'not set'}")
 
     if cfg.log_file.exists() and cfg.log_file.stat().st_size > 0:
         entries = parse_file(cfg.log_file)
@@ -752,6 +730,69 @@ def pull_shortcut(config_dir: ConfigDir = None) -> None:
 def push_shortcut(config_dir: ConfigDir = None) -> None:
     """Push all local entries to the cloud (shortcut for 'sync push')."""
     sync_push(config_dir=config_dir)
+
+
+# ── telegram ───────────────────────────────────────────────────────────
+
+@telegram_app.command(name="setup")
+def telegram_setup(
+    config_dir: ConfigDir = None,
+    bot_token: Annotated[
+        Optional[str],
+        typer.Option("--token", help="Telegram bot token from @BotFather."),
+    ] = None,
+    user_id: Annotated[
+        Optional[str],
+        typer.Option("--user-id", help="Your Telegram numeric user ID."),
+    ] = None,
+) -> None:
+    """Save Telegram bot token and user ID to the chronicle config."""
+    from chronicle.config import save_telegram_config
+
+    cfg = _load_config(config_dir)
+    if not cfg.log_file.exists():
+        typer.echo("Chronicle not initialized. Run 'chronicle init' first.", err=True)
+        raise typer.Exit(code=1)
+
+    if not bot_token:
+        bot_token = typer.prompt("Telegram bot token (from @BotFather)")
+    bot_token = bot_token.strip()
+    if not bot_token:
+        typer.echo("No bot token provided.", err=True)
+        raise typer.Exit(code=1)
+
+    if not user_id:
+        user_id = typer.prompt("Your Telegram user ID (numeric)")
+    user_id = user_id.strip()
+    if not user_id:
+        typer.echo("No user ID provided.", err=True)
+        raise typer.Exit(code=1)
+
+    toml_path = save_telegram_config(
+        bot_token=bot_token,
+        user_id=user_id,
+        config_dir=config_dir,
+    )
+
+    typer.echo(f"Telegram config saved to {toml_path}")
+    typer.echo(f"  Bot token: {bot_token[:8]}...{bot_token[-4:]}")
+    typer.echo(f"  User ID:   {user_id}")
+
+    if cfg.sync_enabled:
+        typer.echo(
+            "\nTip: The Telegram bot reads sync config from the same config.toml."
+        )
+
+
+@telegram_app.command(name="status")
+def telegram_status(config_dir: ConfigDir = None) -> None:
+    """Show Telegram bot configuration status."""
+    cfg = _load_config(config_dir)
+
+    typer.echo("Chronicle Telegram Status")
+    typer.echo("=" * 40)
+    typer.echo(f"  Bot token: {'configured' if cfg.telegram_bot_token else 'not set'}")
+    typer.echo(f"  User ID:   {cfg.telegram_user_id or 'not set'}")
 
 
 def app_main() -> None:

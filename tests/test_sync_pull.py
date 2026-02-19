@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from chronicle.sync.backend import SyncBackend
-from chronicle.sync.crypto import derive_key, encrypt_payload, generate_salt
+from chronicle.sync.crypto import encrypt_payload, generate_key
 from chronicle.sync.pull import pull
 from chronicle.storage import format_entry
 from chronicle.parser import parse_file
@@ -49,8 +49,7 @@ def _make_entry(entry_id: str, body: str) -> Entry:
 
 @pytest.fixture
 def key():
-    salt = b"testsalt12345678"
-    return derive_key("test-passphrase", salt)
+    return generate_key()
 
 
 class TestPull:

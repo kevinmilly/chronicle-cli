@@ -1,4 +1,4 @@
-"""Tests for chronicle.sync.crypto — key derivation and encrypt/decrypt."""
+"""Tests for chronicle.sync.crypto — key generation and encrypt/decrypt."""
 
 from __future__ import annotations
 
@@ -6,53 +6,30 @@ import pytest
 
 from chronicle.sync.crypto import (
     decrypt_payload,
-    derive_key,
     encrypt_payload,
-    generate_salt,
+    generate_key,
 )
 
 
-class TestGenerateSalt:
-    def test_returns_16_bytes(self):
-        salt = generate_salt()
-        assert isinstance(salt, bytes)
-        assert len(salt) == 16
+class TestGenerateKey:
+    def test_returns_bytes(self):
+        key = generate_key()
+        assert isinstance(key, bytes)
 
-    def test_unique_each_call(self):
-        assert generate_salt() != generate_salt()
-
-
-class TestDeriveKey:
-    def test_deterministic(self):
-        salt = b"0123456789abcdef"
-        key1 = derive_key("my-passphrase", salt)
-        key2 = derive_key("my-passphrase", salt)
-        assert key1 == key2
-
-    def test_different_passphrase_different_key(self):
-        salt = b"0123456789abcdef"
-        key1 = derive_key("passphrase-a", salt)
-        key2 = derive_key("passphrase-b", salt)
-        assert key1 != key2
-
-    def test_different_salt_different_key(self):
-        key1 = derive_key("same-pass", b"salt_aaaaaaaaaaaa")
-        key2 = derive_key("same-pass", b"salt_bbbbbbbbbbbb")
-        assert key1 != key2
-
-    def test_key_is_valid_fernet_key(self):
+    def test_valid_fernet_key(self):
         from cryptography.fernet import Fernet
 
-        salt = generate_salt()
-        key = derive_key("test", salt)
+        key = generate_key()
         # Should not raise — valid Fernet key
         Fernet(key)
+
+    def test_unique_each_call(self):
+        assert generate_key() != generate_key()
 
 
 class TestEncryptDecrypt:
     def test_roundtrip(self):
-        salt = generate_salt()
-        key = derive_key("test-passphrase", salt)
+        key = generate_key()
         plaintext = "Hello, Chronicle!"
         ciphertext = encrypt_payload(plaintext, key)
         assert ciphertext != plaintext
@@ -60,25 +37,22 @@ class TestEncryptDecrypt:
         assert result == plaintext
 
     def test_roundtrip_multiline(self):
-        salt = generate_salt()
-        key = derive_key("pass", salt)
+        key = generate_key()
         plaintext = "@entry 20260101-1200-ab12 2026-01-01T12:00:00+00:00 entry\nHello world\n@end"
         ciphertext = encrypt_payload(plaintext, key)
         assert decrypt_payload(ciphertext, key) == plaintext
 
-    def test_wrong_passphrase_raises(self):
+    def test_wrong_key_raises(self):
         from cryptography.fernet import InvalidToken
 
-        salt = generate_salt()
-        key_good = derive_key("correct-pass", salt)
-        key_bad = derive_key("wrong-pass", salt)
+        key_good = generate_key()
+        key_bad = generate_key()
         ciphertext = encrypt_payload("secret", key_good)
 
         with pytest.raises(InvalidToken):
             decrypt_payload(ciphertext, key_bad)
 
     def test_unicode_content(self):
-        salt = generate_salt()
-        key = derive_key("pass", salt)
+        key = generate_key()
         plaintext = "Had a great day! 🎉 Très bien."
         assert decrypt_payload(encrypt_payload(plaintext, key), key) == plaintext

@@ -11,7 +11,7 @@ from chronicle.models import Entry
 from chronicle.parser import parse_log
 from chronicle.storage import append_entry, format_entry
 from chronicle.sync.backend import SyncBackend
-from chronicle.sync.crypto import decrypt_payload, derive_key, encrypt_payload
+from chronicle.sync.crypto import decrypt_payload, encrypt_payload, generate_key
 from chronicle.sync.push import push
 
 
@@ -48,8 +48,7 @@ def _make_entry(entry_id: str, body: str) -> Entry:
 
 @pytest.fixture
 def key():
-    salt = b"testsalt12345678"
-    return derive_key("test-passphrase", salt)
+    return generate_key()
 
 
 class TestPush:
